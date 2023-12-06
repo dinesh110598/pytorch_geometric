@@ -25,7 +25,7 @@ from torch_geometric.distributed.rpc import (
 )
 from torch_geometric.distributed.utils import (
     BatchDict,
-    EdgeHeteroSamplerInput,
+    DistEdgeHeteroSamplerInput,
     NodeDict,
     remove_duplicates,
 )
@@ -98,6 +98,7 @@ class DistNeighborSampler:
         self.disjoint = disjoint
         self.temporal_strategy = temporal_strategy
         self.time_attr = time_attr
+        self.temporal = time_attr is not None
         self.with_edge_attr = self.feature_store.has_edge_attr()
         self.csc = True
 
@@ -195,7 +196,7 @@ class DistNeighborSampler:
 
     async def node_sample(
         self,
-        inputs: Union[NodeSamplerInput, EdgeHeteroSamplerInput],
+        inputs: Union[NodeSamplerInput, DistEdgeHeteroSamplerInput],
     ) -> Union[SamplerOutput, HeteroSamplerOutput]:
         r"""Performs layer by layer distributed sampling from a
         :class:`NodeSamplerInput` and returns the output of the sampling
@@ -212,11 +213,12 @@ class DistNeighborSampler:
             seed = inputs.node.to(self.device)
             batch_size = len(inputs.node)
             metadata = (inputs.input_id, inputs.time, batch_size)
-        else:
+        else:  # isinstance(inputs, DistEdgeHeteroSamplerInput)
+            # Metadata is added in the :obj:`edge_sample` function.
             metadata = None
 
         seed_time: Optional[Tensor] = None
-        if self.time_attr is not None:
+        if self.temporal:
             if inputs.time is not None:
                 seed_time = inputs.time.to(self.device)
             elif self.node_time is not None:
@@ -230,17 +232,16 @@ class DistNeighborSampler:
             if input_type is None:
                 raise ValueError("Input type should be defined")
 
-            if isinstance(inputs, NodeSamplerInput):
-                seed_dict: Dict[NodeType, Tensor] = {input_type: seed}
-                seed_time_dict: Dict[NodeType, Tensor] = {
-                    input_type: seed_time
-                }
-            else:
-                seed_dict = inputs.node_dict
-                seed_time_dict = inputs.time_dict
-
             node_dict = NodeDict(self.node_types, self.num_hops)
             batch_dict = BatchDict(self.node_types, self.num_hops)
+
+            if isinstance(inputs, NodeSamplerInput):
+                seed_dict: Dict[NodeType, Tensor] = {input_type: seed}
+                node_dict.seed_time[input_type][0] = seed_time
+
+            else:  # isinstance(inputs, DistEdgeHeteroSamplerInput)
+                seed_dict = inputs.node_dict
+                seed_time_dict = inputs.time_dict
 
             edge_dict: Dict[EdgeType, Tensor] = defaultdict()
             edge_dict.update((k, torch.empty(0, dtype=torch.int64))
@@ -267,11 +268,11 @@ class DistNeighborSampler:
                 num_sampled_nodes_dict[k][0] = len(v)
 
                 if self.disjoint:
-                    src_batch = torch.arange(batch_len, batch_len + len(v))
-                    batch_dict.src[k][0] = src_batch
-                    batch_dict.out[k] = src_batch
+                    batch_src = torch.arange(batch_len, batch_len + len(v))
+                    batch_dict.src[k][0] = batch_src
+                    batch_dict.out[k] = batch_src
 
-                    batch_len = len(src_batch)
+                    batch_len = len(batch_src)
 
             # Loop over the layers:
             for i in range(self.num_hops):
@@ -285,8 +286,8 @@ class DistNeighborSampler:
                         num_sampled_edges_dict[edge_type].append(0)
                         continue
 
-                    seed_time = (seed_time_dict.get(src, None)
-                                 if seed_time_dict is not None else None)
+                    # seed_time = (seed_time_dict.get(src, None)
+                    #              if seed_time_dict is not None else None)
 
                     if isinstance(self.num_neighbors, list):
                         one_hop_num = self.num_neighbors[i]
@@ -297,7 +298,7 @@ class DistNeighborSampler:
                     out = await self.sample_one_hop(
                         node_dict.src[src][i],
                         one_hop_num,
-                        seed_time,
+                        node_dict.seed_time[src][i],
                         batch_dict.src[src][i],
                         edge_type,
                     )
@@ -340,6 +341,18 @@ class DistNeighborSampler:
                     if self.disjoint:
                         batch_dict.with_dupl[dst] = torch.cat(
                             [batch_dict.with_dupl[dst], out.batch])
+
+                    if self.temporal and i < self.num_hops - 1:
+                        # Get the seed time for the next layer based on the
+                        # previous seed_time and sampled neighbors per node
+                        # info:
+                        src_seed_time = batch_src
+                        for batch_idx, time in enumerate(seed_time):
+                            mask = batch_src == batch_idx
+                            src_seed_time[mask] = time
+
+                        node_dict.seed_time[dst][i + 1] = torch.cat(
+                            [node_dict.seed_time[dst][i + 1], src_seed_time])
 
                     # Collect sampled neighbors per node separately
                     # for each layer:
@@ -413,7 +426,7 @@ class DistNeighborSampler:
                 if self.disjoint:
                     batch_with_dupl.append(out.batch)
 
-                if seed_time is not None and i < self.num_hops - 1:
+                if self.temporal and i < self.num_hops - 1:
                     # Get the seed time for the next layer based on the
                     # previous seed_time and sampled neighbors per node info:
                     seed_time = torch.repeat_interleave(
@@ -557,7 +570,7 @@ class DistNeighborSampler:
                     }
 
                 out = await sample_fn(
-                    EdgeHeteroSamplerInput(
+                    DistEdgeHeteroSamplerInput(
                         input_id=inputs.input_id,
                         node_dict=seed_dict,
                         time_dict=seed_time_dict,
@@ -840,7 +853,7 @@ class DistNeighborSampler:
             p_mask = partition_ids == p_id
             p_srcs = torch.masked_select(srcs, p_mask)
             p_seed_time = (torch.masked_select(seed_time, p_mask)
-                           if seed_time is not None else None)
+                           if self.temporal else None)
 
             p_indices = torch.arange(len(p_srcs), dtype=torch.long)
             partition_orders[p_mask] = p_indices
@@ -900,9 +913,9 @@ class DistNeighborSampler:
             rel_type = '__'.join(edge_type)
             colptr = self._sampler.colptr_dict[rel_type]
             row = self._sampler.row_dict[rel_type]
-            node_time = self.node_time.get(edge_type[2],
+            node_time = self.node_time.get(edge_type[0],
                                            None) if self.node_time else None
-            edge_time = self.edge_time.get(edge_type[2],
+            edge_time = self.edge_time.get(edge_type,
                                            None) if self.edge_time else None
 
         out = torch.ops.pyg.dist_neighbor_sample(
@@ -917,12 +930,12 @@ class DistNeighborSampler:
             True,  # csc
             self.replace,
             self.subgraph_type != SubgraphType.induced,
-            self.disjoint and self.time_attr is not None,
+            self.disjoint and self.temporal,
             self.temporal_strategy,
         )
         node, edge, cumsum_neighbors_per_node = out
 
-        if self.disjoint and self.time_attr is not None:
+        if self.disjoint and self.temporal:
             # We create a batch during the step of merging sampler outputs.
             _, node = node.t().contiguous()
 

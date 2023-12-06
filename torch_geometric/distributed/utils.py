@@ -14,18 +14,19 @@ from torch_geometric.utils.mixin import CastMixin
 
 
 @dataclass(init=False)
-class EdgeHeteroSamplerInput(CastMixin):
+class DistEdgeHeteroSamplerInput(CastMixin):
     r"""The sampling input of
-    :meth:`~torch_geometric.sampler.BaseSampler.sample_from_nodes`.
+    :meth:`~torch_geometric.dstributed.DistNeighborSampler.node_sample` used
+    during distributed heterogeneous link sampling.
 
     Args:
         input_id (torch.Tensor, optional): The indices of the data loader input
             of the current mini-batch.
-        node (torch.Tensor): The indices of seed nodes to start sampling from.
-        time (torch.Tensor, optional): The timestamp for the seed nodes.
-            (default: :obj:`None`)
-        input_type (str, optional): The input node type (in case of sampling in
-            a heterogeneous graph). (default: :obj:`None`)
+        node_dict (Dict[NodeType, torch.Tensor]): The indices of seed nodes of
+            a given node types to start sampling from.
+        time_dict (Dict[NodeType, torch.Tensor], optional): The timestamp for
+            the seed nodes of a given nonde types. (default: :obj:`None`)
+        input_type (str, optional): The input node type. (default: :obj:`None`)
     """
     input_id: OptTensor
     node_dict: Dict[NodeType, Tensor]
@@ -57,7 +58,6 @@ class EdgeHeteroSamplerInput(CastMixin):
         self.input_type = input_type
 
 
-@dataclass
 class NodeDict:
     r"""Class used during heterogeneous sampling.
     1) The nodes to serve as source nodes in the next layer.
@@ -68,15 +68,17 @@ class NodeDict:
         self.src: Dict[NodeType, List[Tensor]] = defaultdict(list)
         self.with_dupl: Dict[NodeType, Tensor] = defaultdict()
         self.out: Dict[NodeType, Tensor] = defaultdict()
+        self.seed_time: Dict[NodeType, Tensor] = defaultdict(list)
 
         for k in node_types:
             self.src.update(
                 {k: (num_hops + 1) * [torch.empty(0, dtype=torch.int64)]})
             self.with_dupl.update({k: torch.empty(0, dtype=torch.int64)})
             self.out.update({k: torch.empty(0, dtype=torch.int64)})
+            self.seed_time.update(
+                {k: num_hops * [torch.empty(0, dtype=torch.int64)]})
 
 
-@dataclass
 class BatchDict:
     r"""Class used during disjoint heterogeneous sampling.
     1) The batch to serve as initial subgraph IDs for source nodes in the next
