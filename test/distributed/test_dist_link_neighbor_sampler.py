@@ -83,14 +83,6 @@ def dist_link_neighbor_sampler(
         group_name='dist-sampler-test',
     )
 
-    # Initialize training process group of PyTorch.
-    torch.distributed.init_process_group(
-        backend='gloo',
-        rank=current_ctx.rank,
-        world_size=current_ctx.world_size,
-        init_method=f'tcp://localhost:{master_port}',
-    )
-
     dist_sampler = DistNeighborSampler(
         data=dist_data,
         current_ctx=current_ctx,
@@ -99,6 +91,9 @@ def dist_link_neighbor_sampler(
         shuffle=False,
         disjoint=disjoint,
     )
+
+    # Close RPC & worker group at exit:
+    atexit.register(close_sampler, 0, dist_sampler)
 
     init_rpc(
         current_ctx=current_ctx,
@@ -109,10 +104,6 @@ def dist_link_neighbor_sampler(
 
     dist_sampler.register_sampler_rpc()
     dist_sampler.init_event_loop()
-
-    # Close RPC & worker group at exit:
-    atexit.register(close_sampler, 0, dist_sampler)
-    torch.distributed.barrier()
 
     if rank == 0:  # Seed nodes:
         input_row = torch.tensor([1, 6], dtype=torch.int64)
@@ -131,8 +122,6 @@ def dist_link_neighbor_sampler(
     # evaluate distributed edge sample function
     out_dist = dist_sampler.event_loop.run_task(coro=dist_sampler.edge_sample(
         inputs, dist_sampler.node_sample, data.num_nodes, disjoint))
-
-    torch.distributed.barrier()
 
     sampler = NeighborSampler(data=data, num_neighbors=[-1, -1],
                               disjoint=disjoint)
@@ -156,8 +145,6 @@ def dist_link_neighbor_sampler(
     assert out_dist.num_sampled_nodes == out.num_sampled_nodes
     assert out_dist.num_sampled_edges == out.num_sampled_edges
 
-    torch.distributed.barrier()
-
 
 def dist_link_neighbor_sampler_temporal(
     world_size: int,
@@ -177,14 +164,6 @@ def dist_link_neighbor_sampler_temporal(
         group_name='dist-sampler-test',
     )
 
-    # Initialize training process group of PyTorch.
-    torch.distributed.init_process_group(
-        backend='gloo',
-        rank=current_ctx.rank,
-        world_size=current_ctx.world_size,
-        init_method=f'tcp://localhost:{master_port}',
-    )
-
     num_neighbors = [-1, -1] if temporal_strategy == 'uniform' else [1, 1]
     dist_sampler = DistNeighborSampler(
         data=dist_data,
@@ -197,6 +176,9 @@ def dist_link_neighbor_sampler_temporal(
         time_attr=time_attr,
     )
 
+    # Close RPC & worker group at exit:
+    atexit.register(close_sampler, 0, dist_sampler)
+
     init_rpc(
         current_ctx=current_ctx,
         rpc_worker_names={},
@@ -206,10 +188,6 @@ def dist_link_neighbor_sampler_temporal(
 
     dist_sampler.register_sampler_rpc()
     dist_sampler.init_event_loop()
-
-    # Close RPC & worker group at exit:
-    atexit.register(close_sampler, 0, dist_sampler)
-    torch.distributed.barrier()
 
     if rank == 0:  # Seed nodes:
         input_row = torch.tensor([1, 6], dtype=torch.int64)
@@ -230,8 +208,6 @@ def dist_link_neighbor_sampler_temporal(
         inputs, dist_sampler.node_sample, data.num_nodes, disjoint=True,
         node_time=seed_time, neg_sampling=None))
 
-    torch.distributed.barrier()
-
     sampler = NeighborSampler(
         data=data,
         num_neighbors=num_neighbors,
@@ -250,8 +226,6 @@ def dist_link_neighbor_sampler_temporal(
         neg_sampling=None,
     )
 
-    torch.distributed.barrier()
-
     # Compare distributed output with single machine output
     assert torch.equal(out_dist.node, out.node)
     assert torch.equal(out_dist.row, out.row)
@@ -259,8 +233,6 @@ def dist_link_neighbor_sampler_temporal(
     assert torch.equal(out_dist.batch, out.batch)
     assert out_dist.num_sampled_nodes == out.num_sampled_nodes
     assert out_dist.num_sampled_edges == out.num_sampled_edges
-
-    torch.distributed.barrier()
 
 
 @onlyLinux

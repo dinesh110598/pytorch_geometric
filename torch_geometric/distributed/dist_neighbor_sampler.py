@@ -396,7 +396,7 @@ class DistNeighborSampler:
             node = src.clone()
 
             src_batch = torch.arange(len(seed)) if self.disjoint else None
-            batch = torch.clone(src_batch)
+            batch = src_batch.clone() if self.disjoint else None
 
             src_seed_time = seed_time.clone() if self.temporal else None
 
@@ -923,12 +923,12 @@ class DistNeighborSampler:
             edge_time = self.edge_time.get(edge_type,
                                            None) if self.edge_time else None
 
-        print(
-            f'edge_type={edge_type}, seed_time={seed_time}, edge_time={edge_time}, node_time={node_time}'
-        )
-        print(
-            f'colptr={colptr}, row={row}'
-        )
+        # print(
+        #     f'edge_type={edge_type}, seed_time={seed_time}, edge_time={edge_time}, node_time={node_time}'
+        # )
+        # print(
+        #     f'colptr={colptr}, row={row}'
+        # )
         out = torch.ops.pyg.dist_neighbor_sample(
             colptr,
             row,
