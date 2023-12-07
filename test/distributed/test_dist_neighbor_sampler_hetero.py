@@ -89,14 +89,6 @@ def dist_neighbor_sampler_hetero(
         group_name='dist-sampler-test',
     )
 
-    # Initialize training process group of PyTorch.
-    torch.distributed.init_process_group(
-        backend='gloo',
-        rank=current_ctx.rank,
-        world_size=current_ctx.world_size,
-        init_method=f'tcp://localhost:{master_port}',
-    )
-
     dist_sampler = DistNeighborSampler(
         data=dist_data,
         current_ctx=current_ctx,
@@ -105,6 +97,8 @@ def dist_neighbor_sampler_hetero(
         shuffle=False,
         disjoint=disjoint,
     )
+    # close RPC & worker group at exit:
+    atexit.register(close_sampler, 0, dist_sampler)
 
     init_rpc(
         current_ctx=current_ctx,
@@ -115,10 +109,6 @@ def dist_neighbor_sampler_hetero(
 
     dist_sampler.register_sampler_rpc()
     dist_sampler.init_event_loop()
-
-    # close RPC & worker group at exit:
-    atexit.register(close_sampler, 0, dist_sampler)
-    torch.distributed.barrier()
 
     # Create inputs nodes such that each belongs to a different partition
     node_pb_list = dist_data[1].node_pb[input_type].tolist()
@@ -137,8 +127,6 @@ def dist_neighbor_sampler_hetero(
     out_dist = dist_sampler.event_loop.run_task(
         coro=dist_sampler.node_sample(inputs))
 
-    torch.distributed.barrier()
-
     sampler = NeighborSampler(
         data=data,
         num_neighbors=[-1, -1],
@@ -155,8 +143,6 @@ def dist_neighbor_sampler_hetero(
             assert torch.equal(out_dist.batch[k].sort()[0],
                                out.batch[k].sort()[0])
         assert out_dist.num_sampled_nodes[k] == out.num_sampled_nodes[k]
-
-    torch.distributed.barrier()
 
 
 def dist_neighbor_sampler_temporal_hetero(
@@ -180,14 +166,6 @@ def dist_neighbor_sampler_temporal_hetero(
         group_name='dist-sampler-test',
     )
 
-    # Initialize training process group of PyTorch:
-    torch.distributed.init_process_group(
-        backend='gloo',
-        rank=current_ctx.rank,
-        world_size=current_ctx.world_size,
-        init_method=f'tcp://localhost:{master_port}',
-    )
-
     dist_sampler = DistNeighborSampler(
         data=dist_data,
         current_ctx=current_ctx,
@@ -199,6 +177,9 @@ def dist_neighbor_sampler_temporal_hetero(
         time_attr=time_attr,
     )
 
+    # Close RPC & worker group at exit:
+    atexit.register(close_sampler, 0, dist_sampler)
+
     init_rpc(
         current_ctx=current_ctx,
         rpc_worker_names={},
@@ -208,10 +189,6 @@ def dist_neighbor_sampler_temporal_hetero(
 
     dist_sampler.register_sampler_rpc()
     dist_sampler.init_event_loop()
-
-    # Close RPC & worker group at exit:
-    atexit.register(close_sampler, 0, dist_sampler)
-    torch.distributed.barrier()
 
     # Create inputs nodes such that each belongs to a different partition
     node_pb_list = dist_data[1].node_pb[input_type].tolist()
@@ -231,8 +208,6 @@ def dist_neighbor_sampler_temporal_hetero(
     out_dist = dist_sampler.event_loop.run_task(
         coro=dist_sampler.node_sample(inputs))
 
-    torch.distributed.barrier()
-
     sampler = NeighborSampler(
         data=data,
         num_neighbors=[-1, -1],
@@ -249,8 +224,6 @@ def dist_neighbor_sampler_temporal_hetero(
         assert torch.equal(out_dist.node[k].sort()[0], out.node[k].sort()[0])
         assert torch.equal(out_dist.batch[k].sort()[0], out.batch[k].sort()[0])
         assert out_dist.num_sampled_nodes[k] == out.num_sampled_nodes[k]
-
-    torch.distributed.barrier()
 
 
 @withPackage('pyg_lib')
@@ -292,7 +265,7 @@ def test_dist_neighbor_sampler_hetero(tmp_path, disjoint):
 
 
 @withPackage('pyg_lib')
-@pytest.mark.parametrize('seed_time', [[3, 3], [1, 2], [2, 3]])  #None
+@pytest.mark.parametrize('seed_time', [None, [0, 0], [1, 1], [3, 3]])
 @pytest.mark.parametrize('temporal_strategy', ['uniform', 'last'])
 def test_dist_neighbor_sampler_temporal_hetero(tmp_path, seed_time,
                                                temporal_strategy):
@@ -308,7 +281,7 @@ def test_dist_neighbor_sampler_temporal_hetero(tmp_path, seed_time,
     world_size = 2
     data = FakeHeteroDataset(
         num_graphs=1,
-        avg_num_nodes=10,
+        avg_num_nodes=100,
         avg_degree=3,
         num_node_types=2,
         num_edge_types=4,
@@ -342,7 +315,7 @@ def test_dist_neighbor_sampler_temporal_hetero(tmp_path, seed_time,
 
 
 @withPackage('pyg_lib')
-@pytest.mark.parametrize('seed_time', [[0, 3], [1, 2], [3, 4]])
+@pytest.mark.parametrize('seed_time', [[0, 0], [1, 2], [3, 3]])
 @pytest.mark.parametrize('temporal_strategy', ['uniform', 'last'])
 def test_dist_neighbor_sampler_edge_level_temporal_hetero(
         tmp_path, seed_time, temporal_strategy):

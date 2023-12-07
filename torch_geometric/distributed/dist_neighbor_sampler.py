@@ -237,7 +237,8 @@ class DistNeighborSampler:
 
             if isinstance(inputs, NodeSamplerInput):
                 seed_dict: Dict[NodeType, Tensor] = {input_type: seed}
-                node_dict.seed_time[input_type][0] = seed_time
+                node_dict.seed_time[input_type][0] = seed_time.clone(
+                ) if self.temporal else None
 
             else:  # isinstance(inputs, DistEdgeHeteroSamplerInput)
                 seed_dict = inputs.node_dict
@@ -346,7 +347,7 @@ class DistNeighborSampler:
                         # Get the seed time for the next layer based on the
                         # previous seed_time and sampled neighbors per node
                         # info:
-                        src_seed_time = batch_src
+                        src_seed_time = batch_src.clone()
                         for batch_idx, time in enumerate(seed_time):
                             mask = batch_src == batch_idx
                             src_seed_time[mask] = time
@@ -392,10 +393,12 @@ class DistNeighborSampler:
             )
         else:
             src = seed
-            node = src
+            node = src.clone()
 
             src_batch = torch.arange(len(seed)) if self.disjoint else None
-            batch = src_batch
+            batch = torch.clone(src_batch)
+
+            src_seed_time = seed_time.clone() if self.temporal else None
 
             node_with_dupl = [torch.empty(0, dtype=torch.int64)]
             batch_with_dupl = [torch.empty(0, dtype=torch.int64)]
@@ -407,8 +410,8 @@ class DistNeighborSampler:
 
             # Loop over the layers
             for i, one_hop_num in enumerate(self.num_neighbors):
-                out = await self.sample_one_hop(src, one_hop_num, seed_time,
-                                                src_batch)
+                out = await self.sample_one_hop(src, one_hop_num,
+                                                src_seed_time, src_batch)
                 if out.node.numel() == 0:
                     # no neighbors were sampled
                     num_zero_layers = self.num_hops - i
@@ -429,8 +432,10 @@ class DistNeighborSampler:
                 if self.temporal and i < self.num_hops - 1:
                     # Get the seed time for the next layer based on the
                     # previous seed_time and sampled neighbors per node info:
-                    seed_time = torch.repeat_interleave(
-                        seed_time, torch.as_tensor(out.metadata[0]))
+                    src_seed_time = src_batch.clone()
+                    for batch_idx, time in enumerate(seed_time):
+                        mask = src_batch == batch_idx
+                        src_seed_time[mask] = time
 
                 num_sampled_nodes.append(len(src))
                 num_sampled_edges.append(len(out.node))
@@ -918,6 +923,12 @@ class DistNeighborSampler:
             edge_time = self.edge_time.get(edge_type,
                                            None) if self.edge_time else None
 
+        print(
+            f'edge_type={edge_type}, seed_time={seed_time}, edge_time={edge_time}, node_time={node_time}'
+        )
+        print(
+            f'colptr={colptr}, row={row}'
+        )
         out = torch.ops.pyg.dist_neighbor_sample(
             colptr,
             row,
