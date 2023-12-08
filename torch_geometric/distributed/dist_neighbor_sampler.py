@@ -343,6 +343,7 @@ class DistNeighborSampler:
                         batch_dict.with_dupl[dst] = torch.cat(
                             [batch_dict.with_dupl[dst], out.batch])
 
+                    print(batch_dict.src)
                     if self.temporal and i < self.num_hops - 1:
                         # Get the seed time for the next layer based on the
                         # previous seed_time and sampled neighbors per node
@@ -423,6 +424,8 @@ class DistNeighborSampler:
                 src, node, src_batch, batch = remove_duplicates(
                     out, node, batch, self.disjoint)
 
+                print(src_batch)
+
                 node_with_dupl.append(out.node)
                 edge.append(out.edge)
 
@@ -430,12 +433,13 @@ class DistNeighborSampler:
                     batch_with_dupl.append(out.batch)
 
                 if self.temporal and i < self.num_hops - 1:
-                    # Get the seed time for the next layer based on the
-                    # previous seed_time and sampled neighbors per node info:
+                    # Assign seed time for every src node based its subgraph
+                    # ID.
                     src_seed_time = src_batch.clone()
                     for batch_idx, time in enumerate(seed_time):
                         mask = src_batch == batch_idx
                         src_seed_time[mask] = time
+                    
 
                 num_sampled_nodes.append(len(src))
                 num_sampled_edges.append(len(out.node))
